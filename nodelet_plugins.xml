@@ -1,0 +1,3 @@
+<library path="lib/libfast_gicp_odometry_nodelet">
+  <class name="fast_gicp/FastGICPOdometryNodelet" type="fast_gicp::FastGICPOdometryNodelet" base_class_type="nodelet::Nodelet" />
+</library>

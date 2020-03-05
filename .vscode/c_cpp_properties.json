@@ -1,0 +1,23 @@
+{
+  "configurations": [
+    {
+      "browse": {
+        "databaseFilename": "",
+        "limitSymbolsToIncludedHeaders": true
+      },
+      "includePath": [
+        "/home/mrboriska/logos_ros/t21l51-robot/devel/include/**",
+        "/home/mrboriska/logos_ros/t21l51-robot-2d/devel/include/**",
+        "/opt/ros/melodic/include/**",
+        "/home/mrboriska/logos_ros/t21l51-robot/src/fast_gicp/include/**",
+        "/home/mrboriska/logos_ros/t21l51-robot/src/hdl_graph_slam/include/**",
+        "/home/mrboriska/logos_ros/t21l51-robot/src/hdl_localization/include/**",
+        "/home/mrboriska/logos_ros/t21l51-robot/src/ndt_omp/include/**",
+        "/home/mrboriska/logos_ros/t21l51-robot-2d/src/octomap_rviz_plugins/include/**",
+        "/home/mrboriska/logos_ros/t21l51-robot/src/t21l51_teleop/include/**",
+        "/usr/include/**"
+      ],
+      "name": "ROS"
+    }
+  ]
+}

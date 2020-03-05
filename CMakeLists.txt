@@ -7,7 +7,13 @@ set(CMAKE_CXX_FLAGS "-msse -msse2 -msse3 -msse4 -msse4.1 -msse4.2")
 
 set(CMAKE_BUILD_TYPE "Release")
 
-find_package(catkin REQUIRED)
+find_package(catkin REQUIRED 
+  roscpp
+  pcl_ros
+  sensor_msgs
+  message_generation
+  nodelet
+)
 
 find_package(PCL REQUIRED)
 find_package(Eigen3 REQUIRED)
@@ -25,11 +31,13 @@ if(CUDA_FOUND)
   link_directories(${CUDA_LIBRARY_DIRS})
 endif()
 
+generate_messages(DEPENDENCIES std_msgs)
+
 ###################################
 ## catkin specific configuration ##
 ###################################
 catkin_package(
-  INCLUDE_DIRS include thirdparty/Sophus
+  INCLUDE_DIRS include thirdparty/Sophus ${catkin_INCLUDE_DIRS}
   LIBRARIES fast_gicp
 #  CATKIN_DEPENDS other_catkin_pkg
 #  DEPENDS system_lib
@@ -92,3 +100,13 @@ if(CUDA_FOUND)
   )
   add_dependencies(fast_gicp fast_vgicp_cuda)
 endif()
+
+add_library(fast_gicp_odometry_nodelet
+  apps/fast_gicp_odometry_nodelet.cpp
+)
+target_link_libraries(fast_gicp_odometry_nodelet
+  ${catkin_LIBRARIES}
+  ${PCL_LIBRARIES}
+  fast_gicp
+)
+

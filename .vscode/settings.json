@@ -1,0 +1,7 @@
+{
+    "python.autoComplete.extraPaths": [
+        "/home/mrboriska/logos_ros/t21l51-robot/devel/lib/python2.7/dist-packages",
+        "/home/mrboriska/logos_ros/t21l51-robot-2d/devel/lib/python2.7/dist-packages",
+        "/opt/ros/melodic/lib/python2.7/dist-packages"
+    ]
+}
