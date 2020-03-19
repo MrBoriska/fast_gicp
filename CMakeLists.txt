@@ -75,7 +75,7 @@ target_link_libraries(gicp_align
 
 
 if(CUDA_FOUND)
-  set(CUDA_NVCC_FLAGS "--expt-relaxed-constexpr")
+  set(CUDA_NVCC_FLAGS "--expt-relaxed-constexpr -Xcudafe --diag_suppress=esa_on_defaulted_function_ignored")
   add_definitions(-DUSE_VGICP_CUDA)
 
   cuda_add_library(fast_vgicp_cuda

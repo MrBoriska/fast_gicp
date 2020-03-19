@@ -329,7 +329,7 @@ private:
     //registration->align(*aligned, init_guess);
     auto t2 = std::chrono::high_resolution_clock::now();
     double single = std::chrono::duration_cast<std::chrono::nanoseconds>(t2 - t1).count() / 1e6;
-    NODELET_INFO_STREAM("processing_time: " << single << "[msec]");
+    //NODELET_INFO_STREAM("processing_time: " << single << "[msec]");
     
   
     if(!registration->hasConverged()) {
