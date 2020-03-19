@@ -129,7 +129,7 @@ private:
 
 
     fast_gicp_cuda->setNearesetNeighborSearchMethod(fast_gicp::CPU_PARALLEL_KDTREE);
-    fast_gicp_cuda->setResolution(1.0);
+    fast_gicp_cuda->setResolution(pnh.param<double>("vgicp_resolution", 1.0));
     registration = fast_gicp_cuda;
     
     // init values for calc velocity by positions(for odometry)
