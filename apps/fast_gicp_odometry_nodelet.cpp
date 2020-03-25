@@ -171,7 +171,6 @@ private:
         private_nh.param<double>("measure_ori_noise", 0.001)
       ));
     }
-
   }
 
   /**

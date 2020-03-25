@@ -215,7 +215,6 @@ bool FastVGICPCudaCore::optimize(const Eigen::Isometry3f& initial_guess, Eigen::
     cublasGetVector(6, sizeof(float), thrust::raw_pointer_cast(J_loss_ptr), 1, J_loss.data(), 1);
 
     Eigen::Matrix<float, 6, 1> delta = JJ.ldlt().solve(J_loss);
-    //Eigen::Matrix<float, 6, 1> delta = JJ.llt().solve(J_loss);
 
     // update parameters
     x0.head<3>() = (Sophus::SO3f::exp(-delta.head<3>()) * Sophus::SO3f::exp(x0.head<3>())).log();
