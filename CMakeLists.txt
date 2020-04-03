@@ -13,6 +13,7 @@ find_package(catkin REQUIRED
   sensor_msgs
   message_generation
   nodelet
+  ndt_omp
 )
 
 find_package(PCL REQUIRED)

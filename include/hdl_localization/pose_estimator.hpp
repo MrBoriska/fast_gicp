@@ -92,20 +92,23 @@ public:
   }
 
   /**
+   * @brief get_predicted_trans
+   * @return init_guess (predicted)
+   */
+  Eigen::Matrix4f get_predicted_trans() const {
+    Eigen::Matrix4f init_guess = Eigen::Matrix4f::Identity();
+    init_guess.block<3, 3>(0, 0) = quat().toRotationMatrix();
+    init_guess.block<3, 1>(0, 3) = pos();
+    return init_guess;
+  }
+
+
+  /**
    * @brief correct
    * @param cloud   input cloud
    * @return cloud aligned to the globalmap
    */
-  pcl::PointCloud<PointT>::Ptr correct(const pcl::PointCloud<PointT>::ConstPtr& cloud) {
-    Eigen::Matrix4f init_guess = Eigen::Matrix4f::Identity();
-    init_guess.block<3, 3>(0, 0) = quat().toRotationMatrix();
-    init_guess.block<3, 1>(0, 3) = pos();
-
-    pcl::PointCloud<PointT>::Ptr aligned(new pcl::PointCloud<PointT>());
-    registration->setInputSource(cloud);
-    registration->align(*aligned, init_guess);
-
-    Eigen::Matrix4f trans = registration->getFinalTransformation();
+  void correct(const Eigen::Matrix4f &trans) {
     Eigen::Vector3f p = trans.block<3, 1>(0, 3);
     Eigen::Quaternionf q(trans.block<3, 3>(0, 0));
 
@@ -118,7 +121,6 @@ public:
     observation.middleRows(3, 4) = Eigen::Vector4f(q.w(), q.x(), q.y(), q.z());
 
     ukf->correct(observation);
-    return aligned;
   }
 
   /* getters */

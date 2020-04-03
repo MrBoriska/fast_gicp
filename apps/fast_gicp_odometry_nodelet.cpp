@@ -20,12 +20,16 @@
 #include <nodelet/nodelet.h>
 #include <pluginlib/class_list_macros.h>
 
+#include <pcl/common/transforms.h>
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/filters/passthrough.h>
 #include <pcl/filters/approximate_voxel_grid.h>
 
 //#include <hdl_graph_slam/ros_utils.hpp>
 //#include <hdl_graph_slam/registrations.hpp>
+
+#include <pclomp/ndt_omp.h>
+#include <pclomp/gicp_omp.h>
 
 #include <fast_gicp/gicp/fast_gicp.hpp>
 #include <fast_gicp/gicp/fast_gicp_st.hpp>
@@ -44,7 +48,7 @@ public:
   typedef pcl::PointXYZ PointT;
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
-  FastGICPOdometryNodelet() {}
+  FastGICPOdometryNodelet(): pcd_buffer(1) {}
   virtual ~FastGICPOdometryNodelet() {}
 
   virtual void onInit() {
@@ -54,7 +58,7 @@ public:
     private_nh = getPrivateNodeHandle();
 
     initialize_params();
-    
+
     if(use_imu) {
       NODELET_INFO("enable imu-based prediction");
       imu_sub = mt_nh.subscribe("/imu/data", 256, &FastGICPOdometryNodelet::imu_callback, this);
@@ -67,6 +71,9 @@ public:
 
     predict_trans_pub = nh.advertise<geometry_msgs::Pose>("/predict_trans", 32);
     final_trans_pub = nh.advertise<geometry_msgs::Pose>("/final_trans", 32);
+
+
+    pcd_buffer_pub = nh.advertise<sensor_msgs::PointCloud2>("/pcd_buffer", 1);
   }
 
 private:
@@ -93,6 +100,10 @@ private:
     max_acceptable_trans = pnh.param<double>("max_acceptable_trans", 1.0);
     max_acceptable_angle = pnh.param<double>("max_acceptable_angle", 1.0);
 
+    // Scans accumulation
+    scans_buffer_len = pnh.param<int>("scans_buffer_len", 5);
+    pcd_buffer.set_capacity(scans_buffer_len);
+
     // select a downsample method (VOXELGRID, APPROX_VOXELGRID, NONE)
     std::string downsample_method = pnh.param<std::string>("downsample_method", "VOXELGRID");
     double downsample_resolution = pnh.param<double>("downsample_resolution", 0.1);
@@ -118,19 +129,27 @@ private:
 
     //registration = select_registration_method(pnh);
     boost::shared_ptr<fast_gicp::FastVGICPCuda<PointT, PointT>> fast_gicp_cuda(new fast_gicp::FastVGICPCuda<PointT, PointT>());;
-    
-
-
     fast_gicp_cuda->setTransformationEpsilon(pnh.param<double>("transformation_epsilon", 0.01));
+    //fast_gicp_cuda->setRotationEpsilon(pnh.param<double>("rotation_epsilon", 0.01));
     fast_gicp_cuda->setMaximumIterations(pnh.param<int>("maximum_iterations", 64));
-    //fast_gicp_cuda->setUseReciprocalCorrespondences(pnh.param<bool>("use_reciprocal_correspondences", false));
     fast_gicp_cuda->setCorrespondenceRandomness(pnh.param<int>("gicp_correspondence_randomness", 20));
-    //fast_gicp_cuda->setMaximumOptimizerIterations(pnh.param<int>("gicp_max_optimizer_iterations", 20));
-
-
-    fast_gicp_cuda->setNearesetNeighborSearchMethod(fast_gicp::CPU_PARALLEL_KDTREE);
+    fast_gicp_cuda->setNearesetNeighborSearchMethod(fast_gicp::GPU_BRUTEFORCE);
     fast_gicp_cuda->setResolution(pnh.param<double>("vgicp_resolution", 1.0));
     registration = fast_gicp_cuda;
+
+    /*boost::shared_ptr<pclomp::GeneralizedIterativeClosestPoint<PointT, PointT>> gicp(new pclomp::GeneralizedIterativeClosestPoint<PointT, PointT>());
+    gicp->setTransformationEpsilon(pnh.param<double>("transformation_epsilon", 0.01));
+    gicp->setMaximumIterations(pnh.param<int>("maximum_iterations", 64));
+    gicp->setUseReciprocalCorrespondences(pnh.param<bool>("use_reciprocal_correspondences", false));
+    gicp->setCorrespondenceRandomness(pnh.param<int>("gicp_correspondence_randomness", 20));
+    gicp->setMaximumOptimizerIterations(pnh.param<int>("gicp_max_optimizer_iterations", 20));
+    registration = gicp;*/
+
+    /*boost::shared_ptr<fast_gicp::FastVGICP<PointT, PointT>> gicp(new fast_gicp::FastVGICP<PointT, PointT>());
+    gicp->setTransformationEpsilon(pnh.param<double>("transformation_epsilon", 0.01));
+    gicp->setMaximumIterations(pnh.param<int>("maximum_iterations", 64));
+    gicp->setCorrespondenceRandomness(pnh.param<int>("gicp_correspondence_randomness", 20));
+    registration = gicp;*/
     
     // init values for calc velocity by positions(for odometry)
     prev_odom.header.stamp = ros::Time(0.0);
@@ -171,6 +190,7 @@ private:
         private_nh.param<double>("measure_ori_noise", 0.001)
       ));
     }
+
   }
 
   /**
@@ -182,10 +202,17 @@ private:
       return;
     }
 
+    if (!cloud_msg) return;
+
     pcl::PointCloud<PointT>::Ptr cloud(new pcl::PointCloud<PointT>());
     pcl::fromROSMsg(*cloud_msg, *cloud);
-    
     Eigen::Matrix4f pose = matching(cloud_msg->header.stamp, cloud);
+
+    sensor_msgs::PointCloud2 pcd_out;
+    pcl::toROSMsg(*keyframe, pcd_out);
+    pcd_out.header = cloud_msg->header;
+    pcd_out.header.frame_id = odom_frame_id;
+    pcd_buffer_pub.publish(pcd_out);
 
     publish_odometry(cloud_msg->header.stamp, cloud_msg->header.frame_id, pose);
 
@@ -219,12 +246,13 @@ private:
     const auto& p = pose_msg->pose.pose.position;
     const auto& q = pose_msg->pose.pose.orientation;
     pose_estimator.reset(
-          new hdl_localization::PoseEstimator(
+        new hdl_localization::PoseEstimator(
             registration,
             ros::Time::now(),
             Eigen::Vector3f(p.x, p.y, p.z),
             Eigen::Quaternionf(q.w, q.x, q.y, q.z),
-            private_nh.param<double>("cool_time_duration", 0.5))
+            private_nh.param<double>("cool_time_duration", 0.5)
+        )
     );
   }
 
@@ -237,12 +265,28 @@ private:
     if(!downsample_filter) {
       return cloud;
     }
-
+    pcl::PointCloud<PointT>::Ptr work_copy(new pcl::PointCloud<PointT>());
+    pcl::copyPointCloud(*cloud, *work_copy);
     pcl::PointCloud<PointT>::Ptr filtered(new pcl::PointCloud<PointT>());
-    downsample_filter->setInputCloud(cloud);
+    downsample_filter->setInputCloud(work_copy);
     downsample_filter->filter(*filtered);
 
     return filtered;
+  }
+  
+  /**
+   * @brief generation pcd by circular buffer of pcds
+   */
+  static pcl::PointCloud<PointT>::ConstPtr map_to_cloud(const boost::circular_buffer<pcl::PointCloud<PointT>::ConstPtr> &buffer) {
+
+      pcl::PointCloud<PointT>::Ptr temp(new pcl::PointCloud<PointT>());
+      
+      for(auto const& value: buffer) {
+          if (value)
+              *temp += *value;
+      }
+
+      return temp;
   }
 
   /**
@@ -252,16 +296,19 @@ private:
    * @return the relative pose between the input cloud and the keyframe cloud
    */
   Eigen::Matrix4f matching(const ros::Time& stamp, const pcl::PointCloud<PointT>::ConstPtr& cloud) {
-    if(!keyframe) {
-      prev_trans.setIdentity();
-      keyframe_pose.setIdentity();
-      keyframe_stamp = stamp;
-      keyframe = downsample(cloud);
-      registration->setInputTarget(keyframe);
+    if (!keyframe || (!keyframe_stamp.isZero() && keyframe_stamp > stamp)) {
+        prev_trans.setIdentity();
+        keyframe_pose.setIdentity();
+        keyframe_stamp = stamp;
+        
+        std::lock_guard<std::mutex> lock(pcd_buffer_mutex);
+        pcd_buffer.push_back(cloud);
+        keyframe = downsample(cloud);
+        registration->setInputTarget(keyframe);
 
-      //imu_data[0] = imu_data[1];
+        //imu_data[0] = imu_data[1];
 
-      return Eigen::Matrix4f::Identity();
+        return Eigen::Matrix4f::Identity();
     }
 
     auto filtered = downsample(cloud);
@@ -269,47 +316,29 @@ private:
     registration->setInputSource(filtered);
 
 
+    auto t1 = std::chrono::high_resolution_clock::now();
 
     // predict
     if(!use_imu) {
-      pose_estimator->predict(stamp, Eigen::Vector3f::Zero(), Eigen::Vector3f::Zero());
+        pose_estimator->predict(stamp, Eigen::Vector3f::Zero(), Eigen::Vector3f::Zero());
     } else {
-      std::lock_guard<std::mutex> lock(imu_data_mutex);
-      auto imu_iter = imu_data.begin();
-      for(imu_iter; imu_iter != imu_data.end(); imu_iter++) {
-        if(stamp < (*imu_iter)->header.stamp) {
-          break;
+        std::lock_guard<std::mutex> lock(imu_data_mutex);
+        auto imu_iter = imu_data.begin();
+        for(imu_iter; imu_iter != imu_data.end(); imu_iter++) {
+            if(stamp < (*imu_iter)->header.stamp) {
+                break;
+            }
+            const auto& acc = (*imu_iter)->linear_acceleration;
+            const auto& gyro = (*imu_iter)->angular_velocity;
+            double gyro_sign = invert_imu ? -1.0 : 1.0;
+            pose_estimator->predict(
+              (*imu_iter)->header.stamp,
+              Eigen::Vector3f(acc.x, acc.y, acc.z),
+              gyro_sign * Eigen::Vector3f(gyro.x, gyro.y, gyro.z)
+            );
         }
-        const auto& acc = (*imu_iter)->linear_acceleration;
-        const auto& gyro = (*imu_iter)->angular_velocity;
-        double gyro_sign = invert_imu ? -1.0 : 1.0;
-        pose_estimator->predict((*imu_iter)->header.stamp, Eigen::Vector3f(acc.x, acc.y, acc.z), gyro_sign * Eigen::Vector3f(gyro.x, gyro.y, gyro.z));
-      }
-      imu_data.erase(imu_data.begin(), imu_iter);
+        imu_data.erase(imu_data.begin(), imu_iter);
     }
-
-    /*Eigen::Matrix4f init_guess = Eigen::Matrix4f(prev_trans);
-    if (!use_imu) {
-      std::lock_guard<std::mutex> lock(imu_data_mutex);
-      const auto& ori0 = imu_data[0].orientation;
-      Eigen::Quaternionf quat0 = Eigen::Quaternionf(ori0.w,ori0.x,ori0.y,ori0.z).inverse();
-      const auto& ori1 = imu_data[1].orientation;
-      Eigen::Quaternionf quat1 = (quat0*Eigen::Quaternionf(ori1.w,ori1.x,ori1.y,ori1.z)).normalized();
-
-      init_guess.block<3, 3>(0, 0) = quat1.toRotationMatrix();
-
-      geometry_msgs::Pose predict_trans_msg;
-      //predict_trans_msg.position = imu_data[0].position;
-      predict_trans_msg.orientation.x = quat1.x();
-      predict_trans_msg.orientation.y = quat1.y();
-      predict_trans_msg.orientation.z = quat1.z();
-      predict_trans_msg.orientation.w = quat1.w();
-      predict_trans_pub.publish(predict_trans_msg);
-
-      imu_data[0] = imu_data[1];
-    }*/
-
-
 
 
     geometry_msgs::Pose init_guess_msg;
@@ -321,29 +350,30 @@ private:
     predict_trans_pub.publish(init_guess_msg);
 
 
+    
+    pcl::PointCloud<PointT>::Ptr aligned(new pcl::PointCloud<PointT>());
+    auto init_guess = pose_estimator->get_predicted_trans();
 
-    auto t1 = std::chrono::high_resolution_clock::now();
-    auto aligned = pose_estimator->correct(filtered);
-    //pcl::PointCloud<PointT>::Ptr aligned(new pcl::PointCloud<PointT>());
-    //registration->align(*aligned, init_guess);
+    registration->align(*aligned, prev_trans*init_guess);
+    
     auto t2 = std::chrono::high_resolution_clock::now();
     double single = std::chrono::duration_cast<std::chrono::nanoseconds>(t2 - t1).count() / 1e6;
     //NODELET_INFO_STREAM("processing_time: " << single << "[msec]");
-    
   
     if(!registration->hasConverged()) {
-      NODELET_INFO_STREAM("scan matching has not converged!!");
-      NODELET_INFO_STREAM("ignore this frame(" << stamp << ")");
-      return keyframe_pose * prev_trans;
+      NODELET_WARN_STREAM("scan matching has not converged!!");
+      NODELET_WARN_STREAM("ignore this frame(" << stamp << ")");
+      return prev_trans;
     }
 
     Eigen::Matrix4f trans = registration->getFinalTransformation();
+    pose_estimator->correct(prev_trans.inverse()*trans);
 
-    geometry_msgs::Pose final_trans_msg;
+    /*geometry_msgs::Pose final_trans_msg;
     auto final_trans = matrix2transform(stamp, trans, "root_link", "keyframe");
     //final_trans_msg.position = final_trans.transform.translation;
     final_trans_msg.orientation = final_trans.transform.rotation;
-    final_trans_pub.publish(final_trans_msg);
+    final_trans_pub.publish(final_trans_msg);*/
 
 /*
     if (!use_imu) {
@@ -367,17 +397,15 @@ private:
       imu_data[0] = imu_data[1];
     }*/
 
-    Eigen::Matrix4f odom = keyframe_pose * trans;
-
+    Eigen::Matrix4f odom = trans;
     if(transform_thresholding) {
       Eigen::Matrix4f delta = prev_trans.inverse() * trans;
       double dx = delta.block<3, 1>(0, 3).norm();
       double da = std::acos(Eigen::Quaternionf(delta.block<3, 3>(0, 0)).w());
-
       if(dx > max_acceptable_trans || da > max_acceptable_angle) {
         NODELET_INFO_STREAM("too large transform!!  " << dx << "[m] " << da << "[rad]");
         NODELET_INFO_STREAM("ignore this frame(" << stamp << ")");
-        return keyframe_pose * prev_trans;
+        return prev_trans;
       }
     }
 
@@ -386,16 +414,25 @@ private:
     auto keyframe_trans = matrix2transform(stamp, keyframe_pose, odom_frame_id, "keyframe");
     keyframe_broadcaster.sendTransform(keyframe_trans);
 
-    double delta_trans = trans.block<3, 1>(0, 3).norm();
-    double delta_angle = std::acos(Eigen::Quaternionf(trans.block<3, 3>(0, 0)).w());
+    Eigen::Matrix4f delta = keyframe_pose.inverse() * trans;
+    double delta_trans = delta.block<3, 1>(0, 3).norm();
+    double delta_angle = std::acos(Eigen::Quaternionf(delta.block<3, 3>(0, 0)).w());
     double delta_time = (stamp - keyframe_stamp).toSec();
+
     if(delta_trans > keyframe_delta_trans || delta_angle > keyframe_delta_angle || delta_time > keyframe_delta_time) {
-      keyframe = filtered;
-      registration->setInputTarget(keyframe);
+      system("clear");
+      pcl::PointCloud<PointT>::Ptr temp_B(new pcl::PointCloud<PointT>());
+      pcl::transformPointCloud(*cloud, *temp_B, trans, true);
+      std::lock_guard<std::mutex> lock(pcd_buffer_mutex);
+      NODELET_WARN_STREAM("PCD BUFFER CURR LEN: " << pcd_buffer.capacity() << "cloud len:" << temp_B->points.size());
+      pcd_buffer.push_back(temp_B);
+      keyframe = map_to_cloud(pcd_buffer);
+      //auto keyframe_ = downsample(keyframe);
+      registration->setInputTarget(downsample(keyframe));
 
       keyframe_pose = odom;
       keyframe_stamp = stamp;
-      prev_trans.setIdentity();
+      //prev_trans.setIdentity();
     }
 
     return odom;
@@ -516,8 +553,14 @@ private:
   std::string odom_frame_id;
   bool publish_tf;
   ros::Publisher read_until_pub;
+
   ros::Publisher predict_trans_pub;
   ros::Publisher final_trans_pub;
+  ros::Publisher pcd_buffer_pub;
+  
+  std::mutex pcd_buffer_mutex;
+  boost::circular_buffer<pcl::PointCloud<PointT>::ConstPtr> pcd_buffer;
+  int scans_buffer_len;
 
   // imu input buffer
   std::mutex imu_data_mutex;

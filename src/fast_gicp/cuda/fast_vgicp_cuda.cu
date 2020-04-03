@@ -157,7 +157,7 @@ void FastVGICPCudaCore::create_target_voxelmap() {
   }
   voxelmap->create_voxelmap(*target_points, *target_covariances);
 
-  // cudaDeviceSynchronize();
+  cudaDeviceSynchronize();
 }
 
 bool FastVGICPCudaCore::is_converged(const Eigen::Matrix<float, 6, 1>& delta) const {
@@ -202,19 +202,28 @@ bool FastVGICPCudaCore::optimize(const Eigen::Isometry3f& initial_guess, Eigen::
 
     int cols = 3 * losses.size();
 
+    // equal JJ_ptr = (alfa*Js.transpose()) * (beta*Js)
     float* Js_ptr = thrust::reinterpret_pointer_cast<float*>(Js.data());
     cublasSgemm(cublas_handle, CUBLAS_OP_N, CUBLAS_OP_T, 6, 6, cols, &alpha, Js_ptr, 6, Js_ptr, 6, &beta, thrust::raw_pointer_cast(JJ_ptr), 6);
 
+    // equal J_loss_ptr = (alfa*Js) * (beta*losses)
     float* loss_ptr = thrust::reinterpret_pointer_cast<float*>(losses.data());
     cublasSgemv(cublas_handle, CUBLAS_OP_N, 6, cols, &alpha, Js_ptr, 6, loss_ptr, 1, &beta, thrust::raw_pointer_cast(J_loss_ptr), 1);
 
+    // equal JJ = JJ_ptr
     Eigen::Matrix<float, 6, 6> JJ;
     cublasGetMatrix(6, 6, sizeof(float), thrust::raw_pointer_cast(JJ_ptr), 6, JJ.data(), 6);
 
+    // equal J_loss = J_loss_ptr
     Eigen::Matrix<float, 6, 1> J_loss;
     cublasGetVector(6, sizeof(float), thrust::raw_pointer_cast(J_loss_ptr), 1, J_loss.data(), 1);
 
     Eigen::Matrix<float, 6, 1> delta = JJ.ldlt().solve(J_loss);
+
+    if(!delta.array().isFinite().all()) {
+      // std::cerr << "!!!! delta corrupted !!!!" << std::endl;
+      delta = Eigen::Matrix<float, 6, 1>::Random() * 1e-2;
+    }
 
     // update parameters
     x0.head<3>() = (Sophus::SO3f::exp(-delta.head<3>()) * Sophus::SO3f::exp(x0.head<3>())).log();
