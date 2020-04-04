@@ -129,11 +129,11 @@ private:
 
     //registration = select_registration_method(pnh);
     boost::shared_ptr<fast_gicp::FastVGICPCuda<PointT, PointT>> fast_gicp_cuda(new fast_gicp::FastVGICPCuda<PointT, PointT>());;
-    fast_gicp_cuda->setTransformationEpsilon(pnh.param<double>("transformation_epsilon", 0.01));
-    //fast_gicp_cuda->setRotationEpsilon(pnh.param<double>("rotation_epsilon", 0.01));
+    fast_gicp_cuda->setTransformationEpsilon(pnh.param<double>("transformation_epsilon", 5e-4));
+    fast_gicp_cuda->setRotationEpsilon(pnh.param<double>("rotation_epsilon", 2e-3));
     fast_gicp_cuda->setMaximumIterations(pnh.param<int>("maximum_iterations", 64));
     fast_gicp_cuda->setCorrespondenceRandomness(pnh.param<int>("gicp_correspondence_randomness", 20));
-    fast_gicp_cuda->setNearesetNeighborSearchMethod(fast_gicp::GPU_BRUTEFORCE);
+    //fast_gicp_cuda->setNearesetNeighborSearchMethod(fast_gicp::GPU_BRUTEFORCE);
     fast_gicp_cuda->setResolution(pnh.param<double>("vgicp_resolution", 1.0));
     registration = fast_gicp_cuda;
 
@@ -349,7 +349,6 @@ private:
     init_guess_msg.orientation.w = predict_q.w();
     predict_trans_pub.publish(init_guess_msg);
 
-
     
     pcl::PointCloud<PointT>::Ptr aligned(new pcl::PointCloud<PointT>());
     auto init_guess = pose_estimator->get_predicted_trans();
@@ -365,15 +364,6 @@ private:
       NODELET_WARN_STREAM("ignore this frame(" << stamp << ")");
       return prev_trans;
     }
-
-    Eigen::Matrix4f trans = registration->getFinalTransformation();
-    pose_estimator->correct(prev_trans.inverse()*trans);
-
-    /*geometry_msgs::Pose final_trans_msg;
-    auto final_trans = matrix2transform(stamp, trans, "root_link", "keyframe");
-    //final_trans_msg.position = final_trans.transform.translation;
-    final_trans_msg.orientation = final_trans.transform.rotation;
-    final_trans_pub.publish(final_trans_msg);*/
 
 /*
     if (!use_imu) {
@@ -397,6 +387,7 @@ private:
       imu_data[0] = imu_data[1];
     }*/
 
+    Eigen::Matrix4f trans = registration->getFinalTransformation();
     Eigen::Matrix4f odom = trans;
     if(transform_thresholding) {
       Eigen::Matrix4f delta = prev_trans.inverse() * trans;
@@ -409,6 +400,13 @@ private:
       }
     }
 
+    pose_estimator->correct(prev_trans.inverse()*trans);
+
+    /*geometry_msgs::Pose final_trans_msg;
+    auto final_trans = matrix2transform(stamp, trans, "root_link", "keyframe");
+    //final_trans_msg.position = final_trans.transform.translation;
+    final_trans_msg.orientation = final_trans.transform.rotation;
+    final_trans_pub.publish(final_trans_msg);*/
     prev_trans = trans;
 
     auto keyframe_trans = matrix2transform(stamp, keyframe_pose, odom_frame_id, "keyframe");
@@ -420,7 +418,6 @@ private:
     double delta_time = (stamp - keyframe_stamp).toSec();
 
     if(delta_trans > keyframe_delta_trans || delta_angle > keyframe_delta_angle || delta_time > keyframe_delta_time) {
-      system("clear");
       pcl::PointCloud<PointT>::Ptr temp_B(new pcl::PointCloud<PointT>());
       pcl::transformPointCloud(*cloud, *temp_B, trans, true);
       std::lock_guard<std::mutex> lock(pcd_buffer_mutex);
